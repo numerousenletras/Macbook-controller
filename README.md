@@ -1,29 +1,22 @@
 # Macbook Controller
 
-Standalone project for controlling your Mac from your iPhone over the internet.
+Control your Mac from your iPhone over the internet with a hardened relay and native apps.
 
-## Included
-- Hardened relay backend (`relay/`) with:
-  - short-lived pair codes
-  - token-authenticated Mac registration
-  - optional HTTPS enforcement
-  - origin allowlist
-  - per-IP rate limits
-  - security response headers
-- Native macOS app source (`apps/macos/MacbookControllerMac`)
-- Native iOS app source (`apps/ios/MacbookControlleriOS`)
-- Web controller fallback (`controller/`)
-- HTTPS/WSS deployment configs (`deploy/`)
+## What is in this repo
+- `relay/` FastAPI relay server (pair codes + WebSocket bridge + hardening)
+- `apps/macos/MacbookControllerMac` native macOS agent app
+- `apps/ios/MacbookControlleriOS` native iPhone controller app
+- `deploy/` HTTPS/WSS deployment files (Caddy + docker compose)
+- `controller/` fallback web controller (non-native)
 
-## Architecture
-1. macOS app creates pair code via relay API.
-2. macOS app and iOS app connect to relay WebSockets.
-3. iOS app sends `e2e_hello` with ephemeral key.
-4. macOS app replies with `e2e_ack` and both derive a shared AES-GCM key.
-5. Frames and control events are sent as encrypted envelopes (`secure_frame`, `secure_event`).
-6. Relay only routes ciphertext and cannot read screen or control payloads.
+## Security model
+- TLS transport via HTTPS/WSS
+- App-layer E2E encryption in native apps (Curve25519 + HKDF + AES-GCM)
+- Fingerprint trust confirmation required before stream/control
+- Replay protection with monotonic encrypted sequence counters
+- Automatic rekey every 5 minutes or 300 encrypted messages
 
-## Relay setup (production)
+## 1) Run the relay server (local test)
 ```bash
 cd relay
 python3 -m venv .venv
@@ -32,63 +25,73 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Update `relay/.env`:
+Edit `relay/.env`:
 ```env
 MAC_DEVICE_TOKEN=replace-with-long-random-token
 PAIR_CODE_TTL_SECONDS=300
-ALLOWED_ORIGINS=https://controller.yourdomain.com
-REQUIRE_HTTPS=true
+ALLOWED_ORIGINS=
+REQUIRE_HTTPS=false
 RATE_LIMIT_WINDOW_SECONDS=60
 RATE_LIMIT_CREATE_CODE=15
 RATE_LIMIT_CHECK_CODE=120
 ```
 
-Run relay:
+Start relay:
 ```bash
 uvicorn relay_server:app --host 0.0.0.0 --port 8787
 ```
 
-## HTTPS/WSS deployment
-Use `deploy/Caddyfile` and `deploy/docker-compose.yml`.
+## 2) Run native apps in Xcode
+You now have a checked-in project file, so you can open directly:
+- `apps/MacbookController.xcodeproj`
 
-Edit domains in `deploy/Caddyfile`:
-- `relay.yourdomain.com`
-- `controller.yourdomain.com`
-
-Start stack:
-```bash
-cd deploy
-docker compose up -d
-```
-
-This gives:
-- HTTPS endpoint for API (`https://relay.yourdomain.com`)
-- WSS endpoint for sockets (`wss://relay.yourdomain.com`)
-- static hosting for the fallback web controller (`https://controller.yourdomain.com`)
-
-## Native app build
-See [apps/README.md](apps/README.md).
-
-Quick start:
+Optional regeneration (if project spec changes):
 ```bash
 brew install xcodegen
 cd apps
 xcodegen generate
 ```
 
-Then open `MacbookController.xcodeproj` in Xcode and run:
-- `MacbookControllerMac` on Mac
-- `MacbookControlleriOS` on iPhone
+In Xcode:
+1. Run target `MacbookControllerMac` on your Mac.
+2. Run target `MacbookControlleriOS` on your iPhone.
+3. Set Signing Team for both targets if prompted.
 
-## macOS permissions
-For the macOS app/agent to work:
+## 3) First-time permissions on macOS
+Grant the macOS app:
 - System Settings -> Privacy & Security -> Screen Recording
 - System Settings -> Privacy & Security -> Accessibility
 
-## Security checklist
-- Use a long random `MAC_DEVICE_TOKEN`
-- Keep `REQUIRE_HTTPS=true` in production
-- Set explicit `ALLOWED_ORIGINS`
-- Run relay behind Caddy/Nginx with TLS
-- Use the native iOS/macOS apps for E2E encrypted control sessions
-- Put relay behind firewall and monitor logs
+Then fully quit and relaunch the Mac app.
+
+## 4) Pair and test
+1. In Mac app, enter relay URLs and token, then click **Start Session**.
+2. Mac app shows a 6-digit code and E2E fingerprint.
+3. In iPhone app, enter relay WS URL and code, then connect.
+4. Compare fingerprints on both devices and press **Trust** on both.
+5. Stream + controls should go live.
+
+## 5) Production deploy (HTTPS/WSS)
+Use `deploy/Caddyfile` + `deploy/docker-compose.yml`.
+
+Edit domains in `deploy/Caddyfile`:
+- `relay.yourdomain.com`
+- `controller.yourdomain.com`
+
+Set relay env for production:
+```env
+REQUIRE_HTTPS=true
+ALLOWED_ORIGINS=https://controller.yourdomain.com
+```
+
+Then:
+```bash
+cd deploy
+docker compose up -d
+```
+
+## Troubleshooting
+- iPhone app connects but no stream: fingerprint likely not trusted yet on one side.
+- No controls: macOS Accessibility permission missing.
+- Blank frames: macOS Screen Recording permission missing.
+- WebSocket fails remotely: check DNS/TLS and use `wss://` URL.

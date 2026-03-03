@@ -1,45 +1,36 @@
 # Native Apps (iOS + macOS)
 
-This repo includes native SwiftUI sources for both apps:
-- `apps/macos/MacbookControllerMac`: macOS agent app (creates pair code, streams screen, executes remote input)
-- `apps/ios/MacbookControlleriOS`: iPhone controller app (connects by pair code, renders frames, sends control events)
+## Paths
+- `apps/macos/MacbookControllerMac` (macOS agent)
+- `apps/ios/MacbookControlleriOS` (iPhone controller)
+- `apps/MacbookController.xcodeproj` (ready to open)
 
-## End-to-end encryption
-The native apps use an app-layer E2E channel over WSS:
-1. iOS sends `e2e_hello` with an ephemeral Curve25519 public key.
-2. macOS responds with `e2e_ack` and its ephemeral Curve25519 public key.
-3. Both derive a shared key using HKDF-SHA256.
-4. Frames and events use AES-GCM encrypted envelopes (`secure_frame`, `secure_event`).
+## Build/run
+1. Open `apps/MacbookController.xcodeproj` in Xcode.
+2. Set Signing Team for both targets if prompted.
+3. Run `MacbookControllerMac` on Mac.
+4. Run `MacbookControlleriOS` on iPhone.
 
-Additional protections:
-- Fingerprint confirmation UI on both apps (trust gate required before stream/control)
-- Replay protection using monotonic encrypted sequence counters
-- Automatic session rekeying every 5 minutes or 300 encrypted messages
-
-The relay server only sees ciphertext for secure payloads.
-
-## Build with XcodeGen
-
-1. Install XcodeGen:
+Optional: regenerate project from `apps/project.yml`:
 ```bash
 brew install xcodegen
-```
-
-2. Generate the Xcode project:
-```bash
 cd apps
 xcodegen generate
 ```
 
-3. Open `MacbookController.xcodeproj` in Xcode.
+## E2E protocol
+1. iOS sends `e2e_hello` with ephemeral Curve25519 public key.
+2. macOS responds with `e2e_ack` and its ephemeral key.
+3. Both derive the same session key via HKDF-SHA256.
+4. Frames/events are sent as AES-GCM encrypted envelopes.
 
-4. Build and run:
-- `MacbookControllerMac` on your Mac
-- `MacbookControlleriOS` on your iPhone
+## Safety controls
+- Fingerprint trust gate must be confirmed on both devices.
+- Replay defense drops stale sequence numbers.
+- Session rekeys automatically every 5 minutes or 300 encrypted messages.
 
 ## macOS permissions
-On first run, grant the macOS app:
 - Screen Recording
 - Accessibility
 
-Without these permissions, stream/control features will not work.
+Without both permissions, stream/control will not work.
