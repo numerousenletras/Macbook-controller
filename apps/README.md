@@ -11,7 +11,12 @@ The native apps use an app-layer E2E channel over WSS:
 3. Both derive a shared key using HKDF-SHA256.
 4. Frames and events use AES-GCM encrypted envelopes (`secure_frame`, `secure_event`).
 
-The relay server only sees ciphertext for those payloads.
+Additional protections:
+- Fingerprint confirmation UI on both apps (trust gate required before stream/control)
+- Replay protection using monotonic encrypted sequence counters
+- Automatic session rekeying every 5 minutes or 300 encrypted messages
+
+The relay server only sees ciphertext for secure payloads.
 
 ## Build with XcodeGen
 

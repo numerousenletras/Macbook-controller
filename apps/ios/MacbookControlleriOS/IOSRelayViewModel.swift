@@ -3,6 +3,9 @@ import Foundation
 import SwiftUI
 import UIKit
 
+private let rekeyIntervalSeconds: TimeInterval = 300
+private let rekeyMessageLimit: Int = 300
+
 @MainActor
 final class IOSRelayViewModel: ObservableObject {
     @Published var relayWSURL = "ws://127.0.0.1:8787"
@@ -10,12 +13,19 @@ final class IOSRelayViewModel: ObservableObject {
     @Published var status = "Idle"
     @Published var frameImage: UIImage?
     @Published var textToSend = ""
+    @Published var e2eFingerprint = "-"
+    @Published var isFingerprintTrusted = false
 
     private let session = URLSession(configuration: .default)
     private var socketTask: URLSessionWebSocketTask?
 
-    private var phonePrivateKey: Curve25519.KeyAgreement.PrivateKey?
+    private var pendingPrivateKey: Curve25519.KeyAgreement.PrivateKey?
     private var e2eKey: SymmetricKey?
+    private var keyActivatedAt: Date?
+    private var outboundCountSinceKey = 0
+    private var outboundSeq: Int64 = 0
+    private var lastInboundSeq: Int64 = 0
+    private var rekeyInFlight = false
 
     func connect() {
         disconnect()
@@ -36,16 +46,29 @@ final class IOSRelayViewModel: ObservableObject {
         socketTask = task
         task.resume()
         status = "Connected. Starting secure handshake..."
-        sendE2EHello()
+        initiateKeyExchange(as: "ios")
         receiveLoop()
     }
 
     func disconnect() {
-        phonePrivateKey = nil
-        e2eKey = nil
+        resetSessionCryptoState()
         socketTask?.cancel(with: .normalClosure, reason: nil)
         socketTask = nil
         status = "Disconnected"
+    }
+
+    func trustFingerprint() {
+        guard e2eKey != nil else {
+            status = "No E2E key established yet"
+            return
+        }
+        isFingerprintTrusted = true
+        status = "Fingerprint trusted. Secure control enabled."
+    }
+
+    func clearTrust() {
+        isFingerprintTrusted = false
+        status = "Fingerprint trust cleared"
     }
 
     func sendClick(x: CGFloat, y: CGFloat) {
@@ -67,26 +90,81 @@ final class IOSRelayViewModel: ObservableObject {
         textToSend = ""
     }
 
-    private func sendE2EHello() {
-        let privateKey = Curve25519.KeyAgreement.PrivateKey()
-        phonePrivateKey = privateKey
+    private func resetSessionCryptoState() {
+        pendingPrivateKey = nil
+        e2eKey = nil
+        keyActivatedAt = nil
+        outboundCountSinceKey = 0
+        outboundSeq = 0
+        lastInboundSeq = 0
+        rekeyInFlight = false
+        e2eFingerprint = "-"
+        isFingerprintTrusted = false
+    }
+
+    private func shouldRekeyNow() -> Bool {
+        guard e2eKey != nil else { return false }
+        guard !rekeyInFlight else { return false }
+
+        if outboundCountSinceKey >= rekeyMessageLimit {
+            return true
+        }
+
+        if let keyActivatedAt,
+           Date().timeIntervalSince(keyActivatedAt) >= rekeyIntervalSeconds {
+            return true
+        }
+
+        return false
+    }
+
+    private func initiateKeyExchange(as sender: String) {
+        let localPrivate = Curve25519.KeyAgreement.PrivateKey()
+        pendingPrivateKey = localPrivate
+        rekeyInFlight = true
 
         let hello: [String: Any] = [
             "type": "e2e_hello",
-            "phone_pub": Data(privateKey.publicKey.rawRepresentation).base64EncodedString(),
+            "from": sender,
+            "pub": Data(localPrivate.publicKey.rawRepresentation).base64EncodedString(),
         ]
         sendRaw(hello)
     }
 
+    private func activateKey(_ key: SymmetricKey) {
+        e2eKey = key
+        keyActivatedAt = Date()
+        outboundCountSinceKey = 0
+        outboundSeq = 0
+        lastInboundSeq = 0
+        rekeyInFlight = false
+        isFingerprintTrusted = false
+        e2eFingerprint = CryptoEnvelope.fingerprint(for: key)
+        status = "New E2E key ready. Compare fingerprint and trust."
+    }
+
     private func sendSecure(_ payload: [String: Any]) {
+        if shouldRekeyNow() {
+            initiateKeyExchange(as: "ios")
+        }
+
         guard let key = e2eKey else {
             status = "E2E not ready yet"
             return
         }
+        guard isFingerprintTrusted else {
+            status = "Trust fingerprint before sending controls"
+            return
+        }
 
         do {
-            let encrypted = try CryptoEnvelope.encryptJSONObject(payload, using: key)
+            var enriched = payload
+            outboundSeq += 1
+            enriched["seq"] = outboundSeq
+            enriched["payload_type"] = "event"
+            let encrypted = try CryptoEnvelope.encryptJSONObject(enriched, using: key)
             sendRaw(["type": "secure_event", "combined": encrypted])
+            outboundCountSinceKey += 1
         } catch {
             status = "Encrypt failed"
         }
@@ -101,6 +179,7 @@ final class IOSRelayViewModel: ObservableObject {
             Task { @MainActor in
                 if let error {
                     self?.status = "Send failed: \(error.localizedDescription)"
+                    self?.rekeyInFlight = false
                 }
             }
         }
@@ -138,6 +217,8 @@ final class IOSRelayViewModel: ObservableObject {
             if let message = obj["message"] as? String {
                 status = message
             }
+        case "e2e_hello":
+            handleE2EHello(obj)
         case "e2e_ack":
             handleE2EAck(obj)
         case "secure_frame":
@@ -147,25 +228,47 @@ final class IOSRelayViewModel: ObservableObject {
         }
     }
 
-    private func handleE2EAck(_ obj: [String: Any]) {
-        guard let privateKey = phonePrivateKey else {
-            status = "Missing phone private key"
+    private func handleE2EHello(_ obj: [String: Any]) {
+        guard let peerPubB64 = obj["pub"] as? String,
+              let peerPubData = Data(base64Encoded: peerPubB64) else {
+            status = "Invalid E2E hello payload"
             return
         }
 
-        guard let macPubB64 = obj["mac_pub"] as? String,
-              let macPubData = Data(base64Encoded: macPubB64) else {
+        do {
+            let peerPublicKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: peerPubData)
+            let localPrivate = Curve25519.KeyAgreement.PrivateKey()
+            let sharedSecret = try localPrivate.sharedSecretFromKeyAgreement(with: peerPublicKey)
+            let key = CryptoEnvelope.deriveSymmetricKey(from: sharedSecret)
+            activateKey(key)
+
+            let ack: [String: Any] = [
+                "type": "e2e_ack",
+                "from": "ios",
+                "pub": Data(localPrivate.publicKey.rawRepresentation).base64EncodedString(),
+            ]
+            sendRaw(ack)
+        } catch {
+            status = "E2E setup failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func handleE2EAck(_ obj: [String: Any]) {
+        guard let localPrivate = pendingPrivateKey else { return }
+        guard let peerPubB64 = obj["pub"] as? String,
+              let peerPubData = Data(base64Encoded: peerPubB64) else {
             status = "Invalid E2E ack payload"
             return
         }
 
         do {
-            let macPublicKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: macPubData)
-            let sharedSecret = try privateKey.sharedSecretFromKeyAgreement(with: macPublicKey)
-            e2eKey = CryptoEnvelope.deriveSymmetricKey(from: sharedSecret)
-            status = "Secure E2E session established"
+            let peerPublicKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: peerPubData)
+            let sharedSecret = try localPrivate.sharedSecretFromKeyAgreement(with: peerPublicKey)
+            let key = CryptoEnvelope.deriveSymmetricKey(from: sharedSecret)
+            pendingPrivateKey = nil
+            activateKey(key)
         } catch {
-            status = "E2E setup failed: \(error.localizedDescription)"
+            status = "E2E ack processing failed: \(error.localizedDescription)"
         }
     }
 
@@ -174,7 +277,10 @@ final class IOSRelayViewModel: ObservableObject {
             status = "Received secure frame before key"
             return
         }
-
+        guard isFingerprintTrusted else {
+            status = "Trust fingerprint before viewing stream"
+            return
+        }
         guard let combined = obj["combined"] as? String else {
             status = "Invalid secure frame payload"
             return
@@ -182,8 +288,17 @@ final class IOSRelayViewModel: ObservableObject {
 
         do {
             let decrypted = try CryptoEnvelope.decryptJSONObject(combinedB64: combined, using: key)
-            guard let imageString = decrypted["image"] as? String else { return }
+            guard let seq = decrypted["seq"] as? Int64 ?? (decrypted["seq"] as? Int).map(Int64.init) else {
+                status = "Secure frame missing sequence"
+                return
+            }
+            guard seq > lastInboundSeq else {
+                status = "Replay detected: dropped stale frame"
+                return
+            }
+            lastInboundSeq = seq
 
+            guard let imageString = decrypted["image"] as? String else { return }
             let prefix = "data:image/jpeg;base64,"
             guard imageString.hasPrefix(prefix) else { return }
             let raw = String(imageString.dropFirst(prefix.count))
@@ -228,5 +343,14 @@ enum CryptoEnvelope {
             throw NSError(domain: "Crypto", code: 3)
         }
         return object
+    }
+
+    static func fingerprint(for key: SymmetricKey) -> String {
+        let keyBytes = key.withUnsafeBytes { Data($0) }
+        let digest = SHA256.hash(data: keyBytes)
+        let hex = digest.prefix(8).map { String(format: "%02X", $0) }
+        return stride(from: 0, to: hex.count, by: 2)
+            .map { idx in hex[idx..<min(idx + 2, hex.count)].joined(separator: "") }
+            .joined(separator: "-")
     }
 }

@@ -16,16 +16,29 @@ struct ContentView: View {
                     .textFieldStyle(.roundedBorder)
 
                 HStack {
-                    Button("Connect") {
-                        model.connect()
-                    }
-                    .buttonStyle(.borderedProminent)
+                    Button("Connect") { model.connect() }
+                        .buttonStyle(.borderedProminent)
 
-                    Button("Disconnect") {
-                        model.disconnect()
-                    }
-                    .buttonStyle(.bordered)
+                    Button("Disconnect") { model.disconnect() }
+                        .buttonStyle(.bordered)
                 }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("E2E Fingerprint")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(model.e2eFingerprint)
+                        .font(.callout.monospaced())
+                    HStack {
+                        Button("Trust") { model.trustFingerprint() }
+                            .buttonStyle(.borderedProminent)
+                        Button("Clear") { model.clearTrust() }
+                            .buttonStyle(.bordered)
+                        Text(model.isFingerprintTrusted ? "Trusted" : "Not Trusted")
+                            .foregroundStyle(model.isFingerprintTrusted ? .green : .orange)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
 
                 Group {
                     if let image = model.frameImage {
@@ -70,6 +83,11 @@ struct ContentView: View {
                 }
 
                 Text(model.status)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text("Compare fingerprint with Mac before trusting. Rekeying happens automatically every 5 minutes or 300 encrypted messages.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)

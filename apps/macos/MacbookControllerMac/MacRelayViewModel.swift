@@ -3,6 +3,9 @@ import CryptoKit
 import Foundation
 import ScreenCaptureKit
 
+private let rekeyIntervalSeconds: TimeInterval = 300
+private let rekeyMessageLimit: Int = 300
+
 @MainActor
 final class MacRelayViewModel: ObservableObject {
     @Published var relayHTTPURL = "http://127.0.0.1:8787"
@@ -10,6 +13,8 @@ final class MacRelayViewModel: ObservableObject {
     @Published var deviceToken = "change-me"
     @Published var pairingCode = "-"
     @Published var status = "Idle"
+    @Published var e2eFingerprint = "-"
+    @Published var isFingerprintTrusted = false
 
     private var socketTask: URLSessionWebSocketTask?
     private var frameTask: Task<Void, Never>?
@@ -18,6 +23,12 @@ final class MacRelayViewModel: ObservableObject {
     private let injector = CGEventInjector()
 
     private var e2eKey: SymmetricKey?
+    private var pendingPrivateKey: Curve25519.KeyAgreement.PrivateKey?
+    private var keyActivatedAt: Date?
+    private var outboundCountSinceKey = 0
+    private var outboundSeq: Int64 = 0
+    private var lastInboundSeq: Int64 = 0
+    private var rekeyInFlight = false
 
     func startSession() async {
         stopSession()
@@ -37,12 +48,38 @@ final class MacRelayViewModel: ObservableObject {
     }
 
     func stopSession() {
-        e2eKey = nil
+        resetSessionCryptoState()
         frameTask?.cancel()
         frameTask = nil
         socketTask?.cancel(with: .normalClosure, reason: nil)
         socketTask = nil
         status = "Stopped"
+    }
+
+    func trustFingerprint() {
+        guard e2eKey != nil else {
+            status = "No E2E key established yet"
+            return
+        }
+        isFingerprintTrusted = true
+        status = "Fingerprint trusted. Secure control enabled."
+    }
+
+    func clearTrust() {
+        isFingerprintTrusted = false
+        status = "Fingerprint trust cleared"
+    }
+
+    private func resetSessionCryptoState() {
+        e2eKey = nil
+        pendingPrivateKey = nil
+        keyActivatedAt = nil
+        outboundCountSinceKey = 0
+        outboundSeq = 0
+        lastInboundSeq = 0
+        rekeyInFlight = false
+        isFingerprintTrusted = false
+        e2eFingerprint = "-"
     }
 
     private func createPairCode() async throws -> String {
@@ -113,19 +150,28 @@ final class MacRelayViewModel: ObservableObject {
                     continue
                 }
 
-                guard let key = self.e2eKey else {
+                if self.shouldRekeyNow() {
+                    self.initiateKeyExchange(as: "mac")
+                }
+
+                guard let key = self.e2eKey, self.isFingerprintTrusted else {
                     try? await Task.sleep(nanoseconds: 450_000_000)
                     continue
                 }
 
                 do {
-                    if let frame = try await self.frameProducer.makeFrameMessage() {
+                    if var frame = try await self.frameProducer.makeFrameMessage() {
+                        self.outboundSeq += 1
+                        frame["seq"] = self.outboundSeq
+                        frame["payload_type"] = "frame"
+
                         let encrypted = try CryptoEnvelope.encryptJSONObject(frame, using: key)
                         let outbound: [String: Any] = [
                             "type": "secure_frame",
                             "combined": encrypted,
                         ]
                         try await self.sendJSON(outbound, over: socketTask)
+                        self.outboundCountSinceKey += 1
                     }
                 } catch {
                     self.status = "Frame send error: \(error.localizedDescription)"
@@ -134,6 +180,22 @@ final class MacRelayViewModel: ObservableObject {
                 try? await Task.sleep(nanoseconds: 450_000_000)
             }
         }
+    }
+
+    private func shouldRekeyNow() -> Bool {
+        guard e2eKey != nil else { return false }
+        guard !rekeyInFlight else { return false }
+
+        if outboundCountSinceKey >= rekeyMessageLimit {
+            return true
+        }
+
+        if let keyActivatedAt,
+           Date().timeIntervalSince(keyActivatedAt) >= rekeyIntervalSeconds {
+            return true
+        }
+
+        return false
     }
 
     private func sendJSON(_ payload: [String: Any], over task: URLSessionWebSocketTask? = nil) async throws {
@@ -157,6 +219,8 @@ final class MacRelayViewModel: ObservableObject {
             }
         case "e2e_hello":
             handleE2EHello(message)
+        case "e2e_ack":
+            handleE2EAck(message)
         case "secure_event":
             handleSecureEvent(message)
         default:
@@ -164,29 +228,64 @@ final class MacRelayViewModel: ObservableObject {
         }
     }
 
+    private func initiateKeyExchange(as sender: String) {
+        let localPrivate = Curve25519.KeyAgreement.PrivateKey()
+        pendingPrivateKey = localPrivate
+        rekeyInFlight = true
+
+        let hello: [String: Any] = [
+            "type": "e2e_hello",
+            "from": sender,
+            "pub": Data(localPrivate.publicKey.rawRepresentation).base64EncodedString(),
+        ]
+
+        Task {
+            do {
+                try await sendJSON(hello)
+                status = "Sent E2E hello (\(sender))"
+            } catch {
+                status = "E2E hello failed: \(error.localizedDescription)"
+                rekeyInFlight = false
+            }
+        }
+    }
+
+    private func activateKey(_ key: SymmetricKey) {
+        e2eKey = key
+        keyActivatedAt = Date()
+        outboundCountSinceKey = 0
+        outboundSeq = 0
+        lastInboundSeq = 0
+        rekeyInFlight = false
+        isFingerprintTrusted = false
+        e2eFingerprint = CryptoEnvelope.fingerprint(for: key)
+        status = "New E2E key ready. Compare fingerprint and trust."
+    }
+
     private func handleE2EHello(_ message: [String: Any]) {
-        guard let phonePubB64 = message["phone_pub"] as? String,
-              let phonePubData = Data(base64Encoded: phonePubB64) else {
+        guard let peerPubB64 = message["pub"] as? String,
+              let peerPubData = Data(base64Encoded: peerPubB64) else {
             status = "Invalid E2E hello payload"
             return
         }
 
         do {
-            let phonePublicKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: phonePubData)
-            let macPrivateKey = Curve25519.KeyAgreement.PrivateKey()
-            let sharedSecret = try macPrivateKey.sharedSecretFromKeyAgreement(with: phonePublicKey)
+            let peerPublicKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: peerPubData)
+            let localPrivate = Curve25519.KeyAgreement.PrivateKey()
+            let sharedSecret = try localPrivate.sharedSecretFromKeyAgreement(with: peerPublicKey)
             let key = CryptoEnvelope.deriveSymmetricKey(from: sharedSecret)
-            e2eKey = key
+            activateKey(key)
 
             let ack: [String: Any] = [
                 "type": "e2e_ack",
-                "mac_pub": Data(macPrivateKey.publicKey.rawRepresentation).base64EncodedString(),
+                "from": "mac",
+                "pub": Data(localPrivate.publicKey.rawRepresentation).base64EncodedString(),
             ]
 
             Task {
                 do {
                     try await sendJSON(ack)
-                    status = "Secure E2E session established"
+                    status = "E2E ack sent. Verify fingerprint."
                 } catch {
                     status = "E2E ack failed: \(error.localizedDescription)"
                 }
@@ -196,19 +295,52 @@ final class MacRelayViewModel: ObservableObject {
         }
     }
 
-    private func handleSecureEvent(_ message: [String: Any]) {
-        guard let key = e2eKey else {
-            status = "Ignored insecure event: E2E not ready"
+    private func handleE2EAck(_ message: [String: Any]) {
+        guard let localPrivate = pendingPrivateKey else { return }
+        guard let peerPubB64 = message["pub"] as? String,
+              let peerPubData = Data(base64Encoded: peerPubB64) else {
+            status = "Invalid E2E ack payload"
             return
         }
 
+        do {
+            let peerPublicKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: peerPubData)
+            let sharedSecret = try localPrivate.sharedSecretFromKeyAgreement(with: peerPublicKey)
+            let key = CryptoEnvelope.deriveSymmetricKey(from: sharedSecret)
+            pendingPrivateKey = nil
+            activateKey(key)
+        } catch {
+            status = "E2E ack processing failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func handleSecureEvent(_ message: [String: Any]) {
+        guard let key = e2eKey else {
+            status = "Ignored secure event: key not ready"
+            return
+        }
+        guard isFingerprintTrusted else {
+            status = "Trust fingerprint before accepting controls"
+            return
+        }
         guard let combined = message["combined"] as? String else {
             status = "Invalid secure event payload"
             return
         }
 
         do {
-            let decrypted = try CryptoEnvelope.decryptJSONObject(combinedB64: combined, using: key)
+            var decrypted = try CryptoEnvelope.decryptJSONObject(combinedB64: combined, using: key)
+            guard let seq = decrypted["seq"] as? Int64 ?? (decrypted["seq"] as? Int).map(Int64.init) else {
+                status = "Secure event missing sequence"
+                return
+            }
+            guard seq > lastInboundSeq else {
+                status = "Replay detected: dropped stale event"
+                return
+            }
+            lastInboundSeq = seq
+            decrypted.removeValue(forKey: "seq")
+            decrypted.removeValue(forKey: "payload_type")
             injector.apply(message: decrypted)
         } catch {
             status = "Secure event decrypt failed"
@@ -294,6 +426,15 @@ enum CryptoEnvelope {
             throw NSError(domain: "Crypto", code: 3)
         }
         return object
+    }
+
+    static func fingerprint(for key: SymmetricKey) -> String {
+        let keyBytes = key.withUnsafeBytes { Data($0) }
+        let digest = SHA256.hash(data: keyBytes)
+        let hex = digest.prefix(8).map { String(format: "%02X", $0) }
+        return stride(from: 0, to: hex.count, by: 2)
+            .map { idx in hex[idx..<min(idx + 2, hex.count)].joined(separator: "") }
+            .joined(separator: "-")
     }
 }
 
