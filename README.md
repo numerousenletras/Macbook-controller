@@ -17,10 +17,11 @@ Standalone project for controlling your Mac from your iPhone over the internet.
 
 ## Architecture
 1. macOS app creates pair code via relay API.
-2. macOS app connects to relay WebSocket and streams screen frames.
-3. iOS app connects using the pair code.
-4. iOS app sends remote control events (click/scroll/key/text).
-5. Relay bridges messages between both clients.
+2. macOS app and iOS app connect to relay WebSockets.
+3. iOS app sends `e2e_hello` with ephemeral key.
+4. macOS app replies with `e2e_ack` and both derive a shared AES-GCM key.
+5. Frames and control events are sent as encrypted envelopes (`secure_frame`, `secure_event`).
+6. Relay only routes ciphertext and cannot read screen or control payloads.
 
 ## Relay setup (production)
 ```bash
@@ -89,4 +90,5 @@ For the macOS app/agent to work:
 - Keep `REQUIRE_HTTPS=true` in production
 - Set explicit `ALLOWED_ORIGINS`
 - Run relay behind Caddy/Nginx with TLS
+- Use the native iOS/macOS apps for E2E encrypted control sessions
 - Put relay behind firewall and monitor logs

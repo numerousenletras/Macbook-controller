@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import Foundation
 import ScreenCaptureKit
 
@@ -16,6 +17,8 @@ final class MacRelayViewModel: ObservableObject {
     private let frameProducer = ScreenFrameProducer()
     private let injector = CGEventInjector()
 
+    private var e2eKey: SymmetricKey?
+
     func startSession() async {
         stopSession()
         status = "Creating pairing code..."
@@ -27,13 +30,14 @@ final class MacRelayViewModel: ObservableObject {
             try connectWebSocket(code: code)
             receiveLoop()
             startFrameLoop()
-            status = "Connected. Waiting for iPhone controller..."
+            status = "Connected. Waiting for iPhone secure handshake..."
         } catch {
             status = "Failed to start: \(error.localizedDescription)"
         }
     }
 
     func stopSession() {
+        e2eKey = nil
         frameTask?.cancel()
         frameTask = nil
         socketTask?.cancel(with: .normalClosure, reason: nil)
@@ -109,12 +113,19 @@ final class MacRelayViewModel: ObservableObject {
                     continue
                 }
 
+                guard let key = self.e2eKey else {
+                    try? await Task.sleep(nanoseconds: 450_000_000)
+                    continue
+                }
+
                 do {
                     if let frame = try await self.frameProducer.makeFrameMessage() {
-                        let data = try JSONSerialization.data(withJSONObject: frame)
-                        if let text = String(data: data, encoding: .utf8) {
-                            try await socketTask.send(.string(text))
-                        }
+                        let encrypted = try CryptoEnvelope.encryptJSONObject(frame, using: key)
+                        let outbound: [String: Any] = [
+                            "type": "secure_frame",
+                            "combined": encrypted,
+                        ]
+                        try await self.sendJSON(outbound, over: socketTask)
                     }
                 } catch {
                     self.status = "Frame send error: \(error.localizedDescription)"
@@ -125,15 +136,83 @@ final class MacRelayViewModel: ObservableObject {
         }
     }
 
+    private func sendJSON(_ payload: [String: Any], over task: URLSessionWebSocketTask? = nil) async throws {
+        let target = task ?? socketTask
+        guard let target else { return }
+
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw NSError(domain: "Relay", code: 10)
+        }
+        try await target.send(.string(text))
+    }
+
     private func handleIncomingMessage(_ message: [String: Any]) {
         guard let type = message["type"] as? String else { return }
 
-        if type == "status", let text = message["message"] as? String {
-            status = text
+        switch type {
+        case "status":
+            if let text = message["message"] as? String {
+                status = text
+            }
+        case "e2e_hello":
+            handleE2EHello(message)
+        case "secure_event":
+            handleSecureEvent(message)
+        default:
+            break
+        }
+    }
+
+    private func handleE2EHello(_ message: [String: Any]) {
+        guard let phonePubB64 = message["phone_pub"] as? String,
+              let phonePubData = Data(base64Encoded: phonePubB64) else {
+            status = "Invalid E2E hello payload"
             return
         }
 
-        injector.apply(message: message)
+        do {
+            let phonePublicKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: phonePubData)
+            let macPrivateKey = Curve25519.KeyAgreement.PrivateKey()
+            let sharedSecret = try macPrivateKey.sharedSecretFromKeyAgreement(with: phonePublicKey)
+            let key = CryptoEnvelope.deriveSymmetricKey(from: sharedSecret)
+            e2eKey = key
+
+            let ack: [String: Any] = [
+                "type": "e2e_ack",
+                "mac_pub": Data(macPrivateKey.publicKey.rawRepresentation).base64EncodedString(),
+            ]
+
+            Task {
+                do {
+                    try await sendJSON(ack)
+                    status = "Secure E2E session established"
+                } catch {
+                    status = "E2E ack failed: \(error.localizedDescription)"
+                }
+            }
+        } catch {
+            status = "E2E setup failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func handleSecureEvent(_ message: [String: Any]) {
+        guard let key = e2eKey else {
+            status = "Ignored insecure event: E2E not ready"
+            return
+        }
+
+        guard let combined = message["combined"] as? String else {
+            status = "Invalid secure event payload"
+            return
+        }
+
+        do {
+            let decrypted = try CryptoEnvelope.decryptJSONObject(combinedB64: combined, using: key)
+            injector.apply(message: decrypted)
+        } catch {
+            status = "Secure event decrypt failed"
+        }
     }
 }
 
@@ -180,6 +259,41 @@ actor ScreenFrameProducer {
         let filter = SCContentFilter(display: display, excludingWindows: [])
         self.contentFilter = filter
         return filter
+    }
+}
+
+enum CryptoEnvelope {
+    private static let salt = Data("macbook-controller-salt-v1".utf8)
+    private static let info = Data("macbook-controller-e2e-v1".utf8)
+
+    static func deriveSymmetricKey(from sharedSecret: SharedSecret) -> SymmetricKey {
+        sharedSecret.hkdfDerivedSymmetricKey(
+            using: SHA256.self,
+            salt: salt,
+            sharedInfo: info,
+            outputByteCount: 32
+        )
+    }
+
+    static func encryptJSONObject(_ object: [String: Any], using key: SymmetricKey) throws -> String {
+        let plaintext = try JSONSerialization.data(withJSONObject: object)
+        let sealed = try AES.GCM.seal(plaintext, using: key)
+        guard let combined = sealed.combined else {
+            throw NSError(domain: "Crypto", code: 1)
+        }
+        return combined.base64EncodedString()
+    }
+
+    static func decryptJSONObject(combinedB64: String, using key: SymmetricKey) throws -> [String: Any] {
+        guard let combined = Data(base64Encoded: combinedB64) else {
+            throw NSError(domain: "Crypto", code: 2)
+        }
+        let sealedBox = try AES.GCM.SealedBox(combined: combined)
+        let plaintext = try AES.GCM.open(sealedBox, using: key)
+        guard let object = try JSONSerialization.jsonObject(with: plaintext) as? [String: Any] else {
+            throw NSError(domain: "Crypto", code: 3)
+        }
+        return object
     }
 }
 
